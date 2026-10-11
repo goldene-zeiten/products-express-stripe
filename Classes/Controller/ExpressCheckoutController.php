@@ -7,11 +7,13 @@ namespace GoldeneZeiten\Products\Express\Stripe\Controller;
 use GoldeneZeiten\Products\Core\Domain\Dto\Address;
 use GoldeneZeiten\Products\Core\Domain\Dto\Express\ExpressCheckoutContext;
 use GoldeneZeiten\Products\Core\Domain\Model\Order;
+use GoldeneZeiten\Products\Core\Express\Exception\ExpressOrderExceptionInterface;
 use GoldeneZeiten\Products\Core\Express\ExpressBasketFactory;
 use GoldeneZeiten\Products\Core\Express\ExpressBasketTokenService;
 use GoldeneZeiten\Products\Core\Express\ExpressCheckoutProviderRegistry;
 use GoldeneZeiten\Products\Core\Service\Basket\BasketService;
 use GoldeneZeiten\Products\Core\Service\FrontendUserResolver;
+use GoldeneZeiten\Products\Core\Service\Order\OrderTokenService;
 use GoldeneZeiten\Products\Express\Stripe\Express\Exception\ExpressPaymentDeclinedException;
 use GoldeneZeiten\Products\Express\Stripe\Express\StripeExpressCheckoutProvider;
 use GoldeneZeiten\Products\Express\Stripe\Express\StripeExpressConfirmService;
@@ -39,6 +41,7 @@ final class ExpressCheckoutController extends ActionController
         private readonly ExpressCheckoutProviderRegistry $providerRegistry,
         private readonly ExpressBasketFactory $expressBasketFactory,
         private readonly ExpressBasketTokenService $basketTokenService,
+        private readonly OrderTokenService $orderTokenService,
         private readonly StripeExpressConfirmService $confirmService
     ) {}
 
@@ -65,16 +68,19 @@ final class ExpressCheckoutController extends ActionController
         $body = $this->request->getParsedBody();
         $body = is_array($body) ? $body : [];
 
+        $address = $this->buildAddress($body);
         try {
             $order = $this->confirmService->confirm(
                 $this->request,
-                $this->basketService->getBasketViewModel($this->request),
-                $this->buildAddress($body),
+                $this->basketService->getBasketViewModel($this->request, $address->getCountry()),
+                $address,
                 (string)($body['shippingOption'] ?? ''),
                 (string)($body['paymentMethodId'] ?? '')
             );
         } catch (ExpressPaymentDeclinedException) {
             return new JsonResponse(['error' => 'payment_declined'], 402);
+        } catch (ExpressOrderExceptionInterface) {
+            return new JsonResponse(['error' => 'order_failed'], 409);
         }
 
         return new JsonResponse(['redirectUrl' => $this->thankYouUrl($order)]);
@@ -106,6 +112,12 @@ final class ExpressCheckoutController extends ActionController
         return $this->uriBuilder->reset()
             ->setCreateAbsoluteUri(true)
             ->setTargetPageUid($checkoutPageUid)
-            ->uriFor('thankYou', ['order' => $order->getUid()], 'Checkout', 'ProductsCore', 'Checkout');
+            ->uriFor(
+                'thankYou',
+                ['order' => $order->getUid(), 'hash' => $this->orderTokenService->generateToken($order)],
+                'Checkout',
+                'ProductsCore',
+                'Checkout'
+            );
     }
 }
